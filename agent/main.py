@@ -14,7 +14,6 @@ import cv2
 import yaml
 from pynput import keyboard
 
-from .browser_input import KeyMacroPlayer
 from .capture import ScreenCapture
 from .controller import MacroPlayer
 from .policy import Policy
@@ -73,6 +72,11 @@ def main():
                              cfg.get("controller", {}))
     else:
         print(f"[init] 浏览器输入（CDP {in_cfg.get('cdp_url')}）…")
+        try:
+            from .browser_input import KeyMacroPlayer
+        except ImportError:
+            raise SystemExit("[err] 当前是本地手柄版，没有 CDP 模块；"
+                             "云游戏请用 main 分支，或把 input.backend 设成 gamepad")
         player = KeyMacroPlayer(in_cfg)
     player.start()
     policy = Policy(pol_cfg)
