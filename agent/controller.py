@@ -9,25 +9,29 @@ import queue
 import threading
 import time
 
-import vgamepad as vg
-
-_BTN = {
-    "A": vg.XUSB_BUTTON.XUSB_GAMEPAD_A,
-    "B": vg.XUSB_BUTTON.XUSB_GAMEPAD_B,
-    "X": vg.XUSB_BUTTON.XUSB_GAMEPAD_X,
-    "Y": vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
-    "LB": vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER,
-    "RB": vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER,
-    "BACK": vg.XUSB_BUTTON.XUSB_GAMEPAD_BACK,
-    "START": vg.XUSB_BUTTON.XUSB_GAMEPAD_START,
-    "LS": vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_THUMB,
-    "RS": vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB,
-    "DPAD_UP": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP,
-    "DPAD_DOWN": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
-    "DPAD_LEFT": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT,
-    "DPAD_RIGHT": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_RIGHT,
-}
-_TRIGGER = {"LT": "left_trigger", "RT": "right_trigger"}
+try:
+    import vgamepad as vg
+    _BTN = {
+        "A": vg.XUSB_BUTTON.XUSB_GAMEPAD_A,
+        "B": vg.XUSB_BUTTON.XUSB_GAMEPAD_B,
+        "X": vg.XUSB_BUTTON.XUSB_GAMEPAD_X,
+        "Y": vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
+        "LB": vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER,
+        "RB": vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER,
+        "BACK": vg.XUSB_BUTTON.XUSB_GAMEPAD_BACK,
+        "START": vg.XUSB_BUTTON.XUSB_GAMEPAD_START,
+        "LS": vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_THUMB,
+        "RS": vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB,
+        "DPAD_UP": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP,
+        "DPAD_DOWN": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
+        "DPAD_LEFT": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT,
+        "DPAD_RIGHT": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_RIGHT,
+    }
+    _TRIGGER = {"LT": "left_trigger", "RT": "right_trigger"}
+except ImportError:  # cdp 后端不需要手柄
+    vg = None
+    _BTN = {}
+    _TRIGGER = {}
 _DIRS = {
     "forward": (0.0, 1.0),
     "back": (0.0, -1.0),
@@ -42,6 +46,8 @@ _DIRS = {
 
 class Gamepad:
     def __init__(self):
+        if vg is None:
+            raise RuntimeError("gamepad 后端需要 vgamepad+ViGEmBus；云游戏请用 input.backend: cdp")
         self.pad = vg.VX360Gamepad()
         self._lock = threading.Lock()
 
