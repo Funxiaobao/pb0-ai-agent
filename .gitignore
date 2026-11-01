@@ -1,6 +1,14 @@
+# 依赖
+.venv/
+tmp/
+logs/
 __pycache__/
 *.pyc
-.venv/
+*.png
+*.jpg
+*.jsonl
+*.log
+
+# 含密钥的本地配置，绝不提交
 config.yaml
-logs/
-overlay/state.json
+config_zhipu.yaml
