@@ -1,242 +1,162 @@
-# 影之刃零 · AI 自动游玩（Phantom Blade Zero AI Agent）
+# 影之刃零 · AI 自动游玩（云游戏实战打磨版）
 
-> 这份文档是写给"另一个 AI 助手"的执行规格。读完之后，你应当能在一台 Windows 电脑上，
-> 从零搭出一个"人走开、电脑自己打游戏"的闭环系统，并用 OBS 录成视频。
-
----
-
-## 0. 分支说明（选一个）
-
-| 分支 | 用途 | 输入后端 |
-|---|---|---|
-| `main` | **云游戏版**（网易云游戏跑在 Chrome 里，CDP 给网页发键盘事件） | `cdp`（也可切 gamepad） |
-| `local` | **本地版**（游戏装在本机，虚拟 Xbox 手柄） | `gamepad` |
-
-代码 95% 相同，差别只在输入层：`local` 分支没有 `browser_input.py` / `tools/attach_browser.py`，
-配置默认 `input.backend: gamepad`。云游戏别用 local 分支。
+> 让 AI 自己玩《影之刃零》：抓屏 → 视觉模型看图出招 → 宏队列 → CDP 键鼠注入云游戏网页。
+> 本仓库经过一次完整的实战调教，**AI 已独立战胜序章 Boss「左殇」**。
+> 技术验证与踩坑经验见文末 [实战经验](#实战经验)。
 
 ---
 
-## 1. 目标（验收标准）
-
-1. 启动脚本后，全程**不需要人手碰键鼠**，AI 能进游戏、跑图、战斗、死亡后重开/复活。
-2. 每 0.8~1.5 秒做一次"战术级"决策（看你截的图 → 输出一条招式宏）。
-3. 画面上有一个 OBS 可叠加的"HUD"，实时显示 AI 当前在想什么（做视频用）。
-4. 全程录屏不卡（录屏与 AI 抢资源要有余量）。
-5. 单次可连续运行 ≥ 60 分钟不崩。
-
-**不追求**：打赢所有 Boss、无伤、像高手。要的是"能自己动、有逻辑、有节目效果"。
-允许 AI 打得菜，但**不许卡死在原地不动**（这是最常见的失败模式）。
-
----
-
-## 2. 架构（四层，务必按这个分层写，不要合并）
+## 架构（四层，别合并）
 
 ```
- ┌─────────────┐   30fps   ┌──────────────┐  1次/秒  ┌───────────────┐
- │ DXGI 抓屏   │ ────────► │ 帧缓冲(最新帧)│ ───────► │ 视觉决策模型  │
- │ dxcam       │           │ 只保留最新    │          │ UI-TARS/Qwen-VL│
- └─────────────┘           └──────────────┘          └──────┬────────┘
-                                                            │ JSON: macro
-                                                            ▼
- ┌─────────────┐   60Hz    ┌──────────────┐          ┌───────────────┐
- │ 游戏进程    │ ◄──────── │ 虚拟Xbox手柄 │ ◄─────── │ 宏队列播放器  │
- │ (XInput)    │           │ vgamepad     │          │ 独立线程      │
- └─────────────┘           └──────────────┘          └───────────────┘
+┌──────────┐   30fps    ┌────────────┐   1次/1.2s   ┌──────────────┐
+│ mss 抓屏 │ ─────────► │ 帧缓冲      │ ──────────► │ 视觉决策模型   │
+│ (云游戏视频区自动探测)│ (只留最新帧) │              │ glm-4v-flash  │
+└──────────┘            └────────────┘              └──────┬───────┘
+                                                           │ JSON 宏
+                                                           ▼
+┌────────────┐           ┌─────────────────┐          ┌──────────┐
+│ 网易云游戏   │ ◄──────── │ 宏队列播放器线程   │ ◄──────── │ 动作白名单 │
+│ (Chrome)   │  CDP 键鼠 │ (招式中断/让位机制)│          │ actions.py│
+└────────────┘           └─────────────────┘          └──────────┘
 ```
 
-**为什么必须分层**：视觉模型单步 0.5~3 秒，动作游戏弹反窗口只有 100~200ms。
-所以模型永远**不直接按单键**，它只喊"向左闪避+反击"这种战术指令，
-由本地脚本线程在一秒内把这套动作完整播完。**这是整个方案成立的核心。**
+**为什么分层**：视觉模型单步 1~3 秒，动作游戏弹反窗口只有零点几秒。
+模型永远不直接按单键——它只输出"站桩格挡 2 秒""蓝光重按右键"这类战术宏，
+由播放器线程在亚秒级节奏内把整套动作播完。这是整个方案成立的核心。
 
-**为什么用手柄不用键鼠**：游戏原生支持 XInput，虚拟手柄是系统级设备，
-不注入进程、不读写内存、不碰反作弊，也不受游戏窗口焦点影响（键鼠会）。
-**但你的场景是云游戏网页**——那就再加一条：网页版优先测 `input.backend: cdp`，
-用 CDP 给页面发键盘事件，见第 9 节。
-
----
-
-## 3. 硬件 / 软件环境
-
-| 项目 | 最低 | 推荐 |
-|---|---|---|
-| 系统 | Windows 10 21H2 | Windows 11 23H2 |
-| 显卡 | RTX 3060 12G（跑本地 7B 视觉模型） | RTX 4070Ti+ |
-| 或 | 不用本地模型，走云端 API | — |
-| 内存 | 16G | 32G |
-| 显示器 | 1080p | 1080p 就行，别上 4K（模型输入反正要缩） |
-
-必须装：
-- Python **3.11**（3.12 部分包轮子不稳，别用）
-- **ViGEmBus 驱动**（虚拟手柄的内核驱动，装完必须重启）
-- OBS Studio 30+（录屏 + 叠加 HUD）
-- 游戏本体，**画面设置：窗口化无边框 1920x1080，垂直同步关，帧率不限**
-  - ⚠️ 独占全屏会让 DXGI 抓屏黑屏或抓不到，这是第一大坑
+**为什么用 CDP 而不是系统级键鼠注入**：CDP 的 `Input.dispatchKeyEvent` 直接进渲染进程，
+事件是可信的，窗口被遮挡、失焦都能生效；云游戏页面在指针锁定下坐标会乱，
+SendInput 类方案会踩坑。
 
 ---
 
-## 4. 依赖清单
+## 快速开始
 
-```bash
+### 0) 环境
+
+- Windows 10/11，Python 3.11/3.12（3.12 已验证）
+- Chrome（用调试端口另起一个实例，见下）
+- 网易云游戏网页版里的《影之刃零》
+
+### 1) 安装依赖
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+.\.venv\Scripts\activate
+pip install -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt
 ```
 
-`requirements.txt` 内容：
-```
-dxcam>=0.0.5          # DXGI 抓屏，240fps 级别，几乎不吃 CPU
-vgamepad>=0.1.0       # 虚拟 Xbox360 手柄（依赖 ViGEmBus）
-pynput>=1.7.6         # 全局热键急停
-opencv-python>=4.9    # 缩放 / JPEG 编码
-numpy>=1.26
-requests>=2.31
-pyyaml>=6.0
-```
+> 国内网络直连 PyPI 慢/断，用阿里云镜像；清华镜像曾返回 403。
 
-**外部下载（需人工点一次，脚本代替不了）**：
-1. ViGEmBus：https://github.com/ViGEm/ViGEmBus/releases → 装 `ViGEmBus_*_x64.msi` → **重启**
-2. OBS：https://obsproject.com/
-3. 视觉模型，二选一：
-   - **本地**：`vllm serve ByteDance-Seed/UI-TARS-1.5-7B --port 8000`（7B 约需 16G 显存，fp16）
-     或 `ollama run qwen2.5vl:7b`（Ollama 的 OpenAI 兼容口在 `http://127.0.0.1:11434/v1`）
-   - **云端**：阿里云百炼 `qwen-vl-plus` / 智谱 `glm-4.5v` / 任意 OpenAI 兼容视觉接口
-     （注意：DeepSeek 官方 API 目前没有视觉输入，不能直接看图，别在这上面浪费时间；
-      如果一定要用 DeepSeek，只能让它当"高层军师"，看文字战报不出招，另说。）
-
----
-
-## 5. 文件说明
-
-```
-pb0-ai-agent/
-├─ README.md               ← 本文件（规格）
-├─ CHECKLIST.md            ← 照着一步步做的执行清单，先做这个
-├─ requirements.txt
-├─ config.example.yaml     ← 复制成 config.yaml 改
-├─ agent/
-│  ├─ capture.py           DXGI 抓屏，只留最新帧
-│  ├─ policy.py            调视觉模型，解析 JSON
-│  ├─ controller.py        虚拟手柄 + 宏队列播放器（核心）
-│  ├─ browser_input.py     云游戏网页输入：CDP 键盘事件播放器
-│  ├─ actions.py           宏语法解析
-│  └─ main.py              主循环 + 日志 + 急停
-├─ docs/
-│  ├─ ACTION_DSL.md        宏语法白名单（模型只能输出这些）
-│  └─ PROMPT.md            给视觉模型的 system prompt（可直接用）
-├─ overlay/
-│  └─ index.html           OBS 浏览器源，显示 AI 实时想法
-└─ tools/
-   ├─ selftest_capture.py  验证抓屏（存一张 png）
-   ├─ selftest_controller.py 验证手柄（按 A，看游戏有没有反应）
-   └─ attach_browser.py    验证 CDP：列页面 + 往网页发一个键（云游戏用）
-```
-
----
-
-## 6. 运行
-
-```bash
-# 1) 先跑自检，两个都通过再往下
-python tools/selftest_capture.py
-python tools/selftest_controller.py
-
-# 2) 起模型（本地示例）
-vllm serve ByteDance-Seed/UI-TARS-1.5-7B --port 8000
-
-# 3) 起主程序（游戏已经在跑、且在前台）
-copy config.example.yaml config.yaml
-python -m agent.main config.yaml
-
-# 4) OBS 加"浏览器源"→ 勾选"本地文件"→ overlay/index.html
-#    再开录屏。急停按 F12。
-```
-
-**云游戏（网易云游戏网页）版本**，多一步：先把 Chrome 用调试端口起好、登录进游戏，
-再跑主程序（`input.backend` 设成 `cdp`）：
+### 2) 起带调试端口的 Chrome
 
 ```bat
 chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\cdp-profile ^
   --disable-backgrounding-occluded-windows --disable-renderer-backgrounding
-python tools/attach_browser.py --test
-python -m agent.main config.yaml
 ```
 
-日志落在 `logs/episode_YYYYmmdd_HHMMSS.jsonl`，每行一条
-`{ts, frame_id, thought, macro, latency_ms}`，剪视频时按这个挑高光片段。
+在这个窗口登录网易云游戏并进游戏（登录态存在 profile 里，之后不用重登）。
+
+### 3) 视觉模型 API（二选一）
+
+| 方案 | 说明 |
+|---|---|
+| **智谱 GLM-4V-Flash（免费，实测在用）** | [open.bigmodel.cn](https://open.bigmodel.cn) 手机号注册 → API 密钥。`base_url: https://open.bigmodel.cn/api/paas/v4`，`model: glm-4v-flash` |
+| 硅基流动 Qwen3-VL-8B | [cloud.siliconflow.cn](https://cloud.siliconflow.cn)，注意：新户赠额耗尽后所有视觉模型 402，需充值 |
+
+把 key 填进 `config.yaml`（从 `config.example.yaml` 复制）。**config.yaml 含密钥，已被 .gitignore 排除，勿提交。**
+
+### 4) 自检（都过了再跑主程序）
+
+```powershell
+python tools/selftest_capture.py config.yaml    # 存 logs\selftest.png，应是游戏画面
+python tools/selftest_policy.py config.yaml     # 模型应回 JSON {thought, macro}
+python tools/list_pages.py                      # 确认 CDP 能看到云游戏页面
+python tools/input_test.py                      # 发一次点击+跳跃，测帧差验证输入
+```
+
+### 5) 开跑
+
+```bat
+run_agent.bat      # 或 .venv\Scripts\python -m agent.main config.yaml
+```
+
+- **F12 随时全局急停**（不需要窗口焦点）
+- 决策日志：`logs\episode_YYYYmmdd_HHMMSS.jsonl`，每行 `{ts, frame, thought, macro, latency_ms}`
+- OBS 录屏叠加 AI 内心戏：浏览器源 → 本地文件 → `overlay/index.html`（读 `overlay/state.json`）
 
 ---
 
-## 7. 调参（决定成败的三个旋钮）
+## 动作 DSL（模型唯一允许输出的语言）
 
-| 旋钮 | 默认 | 说明 |
+宏 = 分号分隔的步骤，冒号分隔参数。白名单在 `agent/actions.py`，非法内容被丢弃并替换为 `guard:1.0`。
+
+| 宏 | 参数 | 说明 |
 |---|---|---|
-| `capture.model_every` | 1.0s | 多久问一次模型。调到 0.6 更跟手但更吃算力；>2s 会看起来像发呆 |
-| 宏内单步时长 | 0.06~0.4s | 太短模型来不及反应，太长会被打断。闪避后摇统一给 0.35s |
-| `policy.timeout` | 8s | 超时就播"后退+防御"保命宏，**绝对不能让主循环卡住** |
+| `light` / `heavy` / `jump` / `heal` / `interact` / `confirm` / `lock` / `surge` | — | 单按一次（左键/F/空格/R/E/回车/中键/Q） |
+| `attack:N` | N=1~5 | 连续轻击 N 下 |
+| `dodge:方向` | forward/back/left/right/fl/fr/bl/br | Shift 闪避（含后摇；格挡中会自动松开右键、闪完恢复） |
+| `move:方向:秒数` | 默认 1.1s | 按住方向键走，期间新宏到来立即让位 |
+| `sprint:秒数` | 默认 1.2s | 按住 W+Shift 奔跑 |
+| `turn:left|right` | — | 鼠标相对位移转视角 |
+| `wait:秒数` | 上限 2s | 站桩 |
+| `guard:秒数` | — | 按住右键格挡 |
+| `parry_tap` | — | 蓝光反应：松开右键立刻再按一次（重新格挡判定） |
+| `stance:秒数` | 默认 2s | **站桩格挡流核心**：按住右键不放 + 连按左键普攻，新宏立即让位 |
+| `unblock` | — | 松开右键（战斗结束/赶路） |
+| `combo:键,键,键` | 键名见下 | **快速顺序连招**（0.05s 按下/0.07s 间隔，慢了接不上） |
+| `skill1` / `skill2` | — | 特殊技能：按住右键+F / 按住右键+左键 |
+| `guard_attack:次数` | 默认 3 | 按住右键的同时连按左键 |
+| `spam:动作:次数` | ≤6 | 连点同一键 |
+| `qte:动作:次数` | 默认 8, ≤10 | QTE 狂按（0.04s/0.06s 极快节奏），屏幕提示哪个键按哪个 |
+| `ui_recover` | — | 脱困：连点确认 + 左右移动 |
 
-**失败模式与对策**：
-- 原地发呆/绕圈 → prompt 里加"禁止连续两次 wait"，并且代码层做重复宏惩罚
-- 一直被打死 → 提高 dodge / parry 在 prompt 里的优先级，血量低于 30% 强制 `heal`
-- 卡在门/菜单 → 单独写一个 `ui_recover` 宏（按确认键 + 摇杆乱转 1.5s），连续 3 次同画面触发
-- 模型输出乱码 → 解析失败直接播 `guard:1.5`，不要抛异常
+**键名对照**：`light`=鼠标左键(轻击) `heavy`=F(重击) `jump`=空格 `dodge`=Shift `parry`=鼠标右键(格挡) `lock`=鼠标中键 `heal`=R `interact`=E `confirm`=回车 `surge`=Q。
+模型偶尔直接输出按键字母（F/左键/空格/重击…），`browser_input._norm()` 会做别名归一化。
 
 ---
 
-## 9. 适配：网易云游戏网页版（重要）
+## 战斗心法（实战调出来的规则，已写入 policy 提示词）
 
-游戏不是本地进程，而是浏览器里的一条 WebRTC 视频流。这一条改变四件事：
+1. **一直按住右键格挡**：开局 `stance:3`（按住右键+不断左键普攻），之后每轮 `stance:2` 维持；右键由播放器线程保持按住，不会松。
+2. **蓝光 → `parry_tap`**：敌人冒蓝光时松开右键马上再按一次（重新格挡判定）；蓝光绝不闪避。
+3. **红光/红圈 → `dodge`**：Shift 闪避；红光挡不住，绝不格挡；闪完自动恢复按住右键。
+4. **没锁定 → `lock`**：每次决策先看敌人身上有没有锁定标志，没有就按中键锁定再继续 stance。
+5. **连招按屏幕提示**：教程写什么顺序就 `combo:` 什么顺序，每键只按一次、代码快速连按；QTE 用 `qte:` 狂按。
+6. **大招亮了按 Q**：右下角杀气爆发图标充满 → `surge`。
+7. **攻守平衡**：以 stance 站桩格挡普攻为主，不无脑走位，也不要纯防守僵住。
+8. **战斗结束/赶路 → `unblock`** 再 move/sprint。
 
-### 9.1 输入：先测浏览器认不认手柄
-云游戏平台大多支持手柄，但走的是浏览器 **Gamepad API**，ViGEmBus 虚拟手柄在
-Chrome 里通常是能识别的（要先在页面上按一次键"唤醒"）。测法：
+---
 
-1. 起 Chrome → 进网易云游戏 → 进影之刃零 → 设置成**手柄模式**
-2. 跑 `python tools/selftest_controller.py`，看角色动不动
-3. 动 → `input.backend: gamepad`，最省事，相机用右摇杆，别折腾鼠标
-4. 不动 → `input.backend: cdp`，走网页键盘注入
+## 实战经验（每一坑都踩过）
 
-**CDP 模式前置**（必须新开一个 Chrome 实例，不能用正在跑的）：
-```bat
-chrome.exe --remote-debugging-port=9222 --user-data-dir=C:\cdp-profile ^
-  --disable-backgrounding-occluded-windows --disable-renderer-backgrounding
+1. **Python 3.12 没有 dxcam 轮子** → 抓屏换 `mss`（BitBlt，30fps 足够），接口保持一致。
+2. **vgamepad 无 3.12 轮子且需要 ViGEmBus 驱动** → `controller.py` 改为惰性导入；云游戏走 cdp 后端完全用不到手柄。
+3. **受限环境下 playwright 报 `EPERM mkdtemp`**（TEMP 目录不可写）→ 启动前把 `TMP`/`TEMP` 重定向到项目内 `tmp\`（`run_agent.bat` 已内置）。
+4. **抓屏区域别写死** → 启动时用 CDP 在页面里 `video.getBoundingClientRect()` 自动探测视频区（`capture.region: auto`），窗口布局怎么变都跟得住。
+5. **模型会把悬浮窗口当游戏画面**（曾把聊天窗、OBS 界面当成游戏提示来"阅读"）→ 录屏/悬浮窗放游戏画面外或最小化；抓屏只取视频区。
+6. **暗场景被误判"加载中"** → 提示词明确：只有进度条/转圈/"载入中"文字才算加载；夜晚山洞是正常画面，禁止为此 wait。右下角"激活Windows"水印让模型忽略。
+7. **连招接不上** → 单键间隔要 ≤0.07s（0.05s 按下/0.07s 间隔）；QTE 要 0.04s/0.06s 的连打速度。
+8. **模型把聊天记录当教程**（见第 5 条）与**模型输出按键字母**（F→heavy）都要在输入层做归一化。
+9. **模型免费额度耗尽 402** → 换智谱免费 GLM-4V-Flash；DeepSeek 官方 API 无视觉输入，不能看图出招。
+10. **决策延迟与宏的衔接** → `move/sprint/stance` 在播放期间轮询队列，新宏一来立即让位，避免"播完 2 秒旧动作才反应"。
+
+---
+
+## 目录
+
 ```
-然后在**这个窗口里**登录云游戏、进游戏、设置键盘键位，把键位抄进 `config.yaml` 的 `input.key_map`。
-验证：`python tools/attach_browser.py --test`，看角色有没有反应。
+├─ agent/           主循环 / 抓屏 / 决策 / 输入后端 / 宏解析
+├─ tools/           自检脚本（抓屏、策略、CDP 列表、输入注入、只读链路演练）
+├─ docs/            宏语法 + 给模型的提示词
+├─ overlay/         OBS 浏览器源 HUD
+├─ config.example.yaml   模板（复制成 config.yaml 填 key）
+├─ run_agent.bat    一键启动（含 TMP 重定向 + F12 急停提示）
+└─ 使用说明.md       小白版操作手册
+```
 
-> 直接 `SendInput`/pyautogui 千万别用：云游戏页面在指针锁定状态下会把系统鼠标
-> 变成"隐藏光标 + 相对位移"，自动化库算出来的坐标全是错的，人肉调试能耗一晚上。
+## 合规
 
-### 9.2 抓屏：抓浏览器内容区，不是全屏
-`capture.region` 填浏览器里视频区域的坐标 `[x1, y1, x2, y2]`。
-先跑一次 `tools/selftest_capture.py`，看存下来的图是不是游戏画面：
-- 抓到地址栏/收藏夹 → region 往下移
-- 画面是黑底加一行"正在连接" → 视频还没解码完，等到进游戏再抓
-- 浏览器开 F11 全屏最省事，region 直接 `[0,0,1920,1080]`
-
-### 9.3 延迟预算：比本地多 40~80ms，模型侧要多让
-本地：抓屏 5ms + 模型 800ms。
-云游戏：**再加网络往返 20~50ms + 解码 16ms**，而且画面本身晚 1~2 帧。
-所以 `capture.model_every` 从 1.0 放宽到 **1.2~1.5**，宏里单步时长整体 +30%，
-宁可看起来"慢半拍"，也不要在动作播一半时被下一个宏打断。
-
-### 9.4 云游戏特有的坑（比本地多三种）
-1. **排队 / 免费时长 / 掉线**：出现"继续游戏""重新连接""排队中"画面时，
-   模型是看不懂的。让 `ui_recover` 覆盖这些关键词，并在主循环里加一条规则：
-   画面长时间静止 → 先点确认，再连点 A/Enter 两次。
-2. **掉帧和码率抖动**：网络差时画面糊成马赛克，模型会乱出招，这是视频本身的问题不是模型问题。
-   录视频时最好插网线，并且把平台画质固定，不要"自适应"。
-3. **平台规则**：串流自己买的单机游戏、自己操控，一般不违反条款；但别用平台账号做多开/挂机刷时长，
-   发视频前把账号 ID 糊掉。
-
-### 9.5 出片视角（云游戏反而更好拍）
-云游戏本身就是"一台电脑在跑"，你只要在画面角落再叠一个小窗口显示 `overlay/index.html`，
-再加一句字幕"本机无人在操作"，比本地游戏更有说服力。片头可以拍你把鼠标键盘推到桌子另一头。
-
----
-
-## 8. 合规与发布
-
-- 单机游戏、无联机、无交易，用虚拟手柄/网页按键不算作弊工具，可以放心发。
-- 视频里最好保留"HUD 显示 AI 思考"+"偶尔被小怪打死"的真实感，这比全胜更好看。
-- 标题党可以，但别写"AI 通关"如果没通关，评论区会抓这个。
+单机游戏、自己操控自己账号的云游戏、不读内存不开挂、只像人一样看屏幕按键。发视频前把账号 ID 糊掉。
