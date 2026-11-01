@@ -1,31 +1,32 @@
-# 复制成 config.yaml 再改
-capture:
-  region: null          # 【云游戏必改】浏览器画面区域，如 [0, 120, 1280, 840]
-  fps: 30               # 抓屏频率，只用来保证"永远有最新帧"
-  model_every: 1.2      # 秒，多久问一次模型（云游戏链路更长，建议 1.2~1.5）
-  jpeg_quality: 80
-  max_width: 960        # 送给模型的宽度，越小越快
+# 复制成 config.yaml 再改（config.yaml 含密钥，已被 .gitignore 排除）
 
-# 输入后端
+# 抓屏：region 填 auto 会在启动时通过 CDP 自动探测云游戏视频区域
+capture:
+  region: auto
+  fps: 30
+  model_every: 1.2      # 秒，多久问一次模型（云游戏链路建议 1.2~1.5）
+  jpeg_quality: 80
+  max_width: 960        # 送给模型的图宽，越小越快
+
+# 输入后端：cdp = 通过 Chrome DevTools 给网页发键鼠事件（网易云游戏网页版推荐）
 input:
-  # gamepad = 虚拟 Xbox 手柄（本地游戏 / 云游戏网页认手柄时用）
-  # cdp     = 通过 Chrome DevTools 直接给网页发键盘事件（推荐给网易云游戏网页）
   backend: cdp
   cdp_url: "http://127.0.0.1:9222"
-  page_keyword: "cloud"        # 页面 URL 里包含这个词就选中它，留空则取最后一个标签
+  page_keyword: "cg.163.com"
   tap_hold: 0.06
   dodge_hold: 0.35
-  # 逻辑动作 -> 键盘按键（改成你在云游戏里设置的键位）
+  # 逻辑动作 -> 按键（影之刃零默认键位）
   key_map:
     jump: Space
-    light: j
-    heavy: k
+    light: "mouse:left"
+    heavy: f
     dodge: Shift
-    parry: l
-    lock: q
-    heal: e
-    interact: f
+    parry: "mouse:right"
+    lock: "mouse:middle"
+    heal: r
+    interact: e
     confirm: Enter
+    surge: q
   # 方向 -> 移动键
   move_keys:
     forward: w
@@ -33,17 +34,22 @@ input:
     left: a
     right: d
 
+# 视觉模型，二选一：
+#   A. 智谱 GLM-4V-Flash（免费，推荐）：https://open.bigmodel.cn 注册拿 key
+#      base_url: "https://open.bigmodel.cn/api/paas/v4"  model: "glm-4v-flash"
+#   B. 硅基流动 Qwen3-VL-8B（需充值）：https://cloud.siliconflow.cn
+#      base_url: "https://api.siliconflow.cn/v1"  model: "Qwen/Qwen3-VL-8B-Instruct"
 policy:
-  base_url: "http://127.0.0.1:8000/v1"
-  model: "ByteDance-Seed/UI-TARS-1.5-7B"
-  api_key: "EMPTY"
-  timeout: 8
+  base_url: "https://open.bigmodel.cn/api/paas/v4"
+  model: "glm-4v-flash"
+  api_key: "FILL_ME"
+  timeout: 10
   max_tokens: 220
   temperature: 0.2
-  history_turns: 4      # 带上最近几条决策，帮助模型别重复
+  history_turns: 4
 
+# gamepad 后端才用到（本地游戏 + ViGEmBus 驱动）
 controller:
-  # 逻辑动作 -> Xbox 按键名（A/B/X/Y/LB/RB/LT/RT/LS/RS/START/BACK/DPAD_UP...）
   button_map:
     jump: A
     light: X
@@ -54,16 +60,16 @@ controller:
     heal: LB
     interact: A
     confirm: A
-  tap_hold: 0.06        # 单击按下时长
-  dodge_hold: 0.35      # 闪避后摇
-  stick_gain: 1.0       # 摇杆推到底 = 1.0
+  tap_hold: 0.06
+  dodge_hold: 0.35
+  stick_gain: 1.0
 
 safety:
-  kill_key: f12
+  kill_key: f12            # 全局急停
   max_session_minutes: 120
-  stuck_window_seconds: 25   # 同画面超过这么久 → 播 ui_recover
-  min_hp_guard: false        # 若模型能读出血量就打开
+  stuck_window_seconds: 25
+  min_hp_guard: false
 
 log:
   dir: logs
-  save_frames: false    # true 会把每次决策的截图也存下来（很占硬盘，调试用）
+  save_frames: false
