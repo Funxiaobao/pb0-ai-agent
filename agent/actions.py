@@ -6,11 +6,13 @@
 """
 import re
 
-_SAFE = re.compile(r"^[a-z_]+(:[a-z0-9_.\-]+){0,2}$")
+_SAFE = re.compile(r"^[a-z0-9_]+(:[a-z0-9_.\-,]+){0,2}$")
 ALLOWED = {
     "light", "heavy", "attack", "jump", "parry", "dodge",
     "lock", "heal", "interact", "confirm", "move", "wait",
-    "guard", "ui_recover",
+    "guard", "ui_recover", "sprint", "turn", "spam",
+    "combo", "skill1", "skill2", "guard_attack", "surge", "qte", "stance",
+    "parry_tap", "unblock",
 }
 
 
