@@ -62,9 +62,21 @@ def main():
     pol_cfg.setdefault("max_width", cap_cfg.get("max_width", 960))
 
     print("[init] 抓屏…")
-    cap = ScreenCapture(region=cap_cfg.get("region"), fps=int(cap_cfg.get("fps", 30)))
-    # 输入后端：本地游戏用 gamepad；网页版云游戏用 cdp（键盘事件注入浏览器）
     in_cfg = cfg.get("input", {}) or {}
+    region = cap_cfg.get("region")
+    if region == "auto":
+        region = None
+        try:
+            from .browser_input import probe_video_region
+            r = probe_video_region(in_cfg.get("cdp_url", "http://127.0.0.1:9222"),
+                                   in_cfg.get("page_keyword", ""))
+            if r:
+                region = r
+                print("[init] 自动探测到视频区域:", r)
+        except Exception as e:
+            print("[init] 区域探测失败, 回退全屏:", e)
+    cap = ScreenCapture(region=region, fps=int(cap_cfg.get("fps", 30)))
+    # 输入后端：本地游戏用 gamepad；网页版云游戏用 cdp（键盘事件注入浏览器）
     backend = in_cfg.get("backend", "gamepad")
     if backend == "gamepad":
         print("[init] 虚拟手柄…")
